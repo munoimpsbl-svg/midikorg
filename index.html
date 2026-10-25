@@ -38,6 +38,8 @@ html,body{background:var(--bg);color:var(--ink);margin:0}
 .meter b{display:block;height:100%;width:0;background:var(--ok)}
 .rec-time{font-family:var(--f-mono);font-size:14px;font-variant-numeric:tabular-nums;min-width:4.5em}
 .or{font-size:12px;color:var(--mute)}
+.live{min-width:3em;text-align:right;color:var(--mute)}
+.live.hit{color:var(--accent);font-weight:500}
 </style></head><body>
 <style>
 body{font-family:var(--f-body);font-size:15px;line-height:1.6}
@@ -92,7 +94,7 @@ ol.steps li::marker{font-family:var(--f-mono);color:var(--accent)}
     <div class="st-head"><span class="st-no">01</span><h2 id="h1">鼻歌を録る</h2></div>
     <div class="rec">
       <button id="recBtn" type="button" class="primary recbtn">● 録音スタート</button>
-      <div class="row"><div class="beats" id="beats" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="meter"><b id="meter"></b></div><span id="recTime" class="rec-time">0:00.0</span></div>
+      <div class="row"><div class="beats" id="beats" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="meter"><b id="meter"></b></div><span id="recTime" class="rec-time">0:00.0</span><span id="liveNote" class="rec-time live">—</span></div>
       <label class="check"><input id="recClick" type="checkbox">録音中もクリックを鳴らす（イヤホン推奨）</label>
       <p class="hint">押すと下のBPMで4拍カウントしてから録音が始まります。4拍目のあとに歌い出すと1小節目の頭になります。「ラ〜」「ル〜」と母音を伸ばすと認識しやすいです。</p>
     </div>
@@ -117,10 +119,10 @@ ol.steps li::marker{font-family:var(--f-mono);color:var(--accent)}
         <select id="grid"><option value="1">4分音符</option><option value="0.5">8分音符</option><option value="0.25" selected>16分音符</option><option value="0.125">32分音符</option><option value="0">しない</option></select></div>
       <div class="ctl"><label for="oct">オクターブ</label>
         <select id="oct"><option value="-2">−2</option><option value="-1">−1</option><option value="0" selected>そのまま</option><option value="1">＋1</option><option value="2">＋2</option></select></div>
-      <div class="ctl"><label for="sens">感度 <span id="sensVal" class="val">50</span></label><input id="sens" type="range" min="0" max="100" value="50"></div>
+      <div class="ctl"><label for="sens">感度 <span id="sensVal" class="val">65</span></label><input id="sens" type="range" min="0" max="100" value="65"></div>
     </div>
     <label class="check"><input id="trim" type="checkbox" checked>最初の無音を詰めて1拍目から始める</label>
-    <p class="hint">音がブツ切れになるときは感度を上げ、雑音まで拾うときは下げてください。</p>
+    <p class="hint">音がブツ切れ・抜けるときは感度を上げ、雑音まで音符になるときは下げてください。「声の検出」が低いときはマイクに近づくか、もう少しはっきり鳴らしてください。</p>
   </section>
 
   <section class="station" aria-labelledby="h3">
@@ -182,18 +184,32 @@ function yin(x,s){
     let sum=0; for(let i=0;i<YW;i++){const v=x[s+i]-x[s+i+t]; sum+=v*v;}
     run+=sum; dbuf[t]=run>0?sum*t/run:1;
   }
-  for(let t=TMIN;t<=TMAX;t++){ if(dbuf[t]<0.15){ while(t+1<=TMAX&&dbuf[t+1]<dbuf[t])t++; best=t; break; } }
+  for(let t=TMIN;t<=TMAX;t++){ if(dbuf[t]<0.2){ while(t+1<=TMAX&&dbuf[t+1]<dbuf[t])t++; best=t; break; } }
   if(best<0){ let mv=9; for(let t=TMIN;t<=TMAX;t++)if(dbuf[t]<mv){mv=dbuf[t];best=t;} }
   let tau=best;
   if(best>TMIN&&best<TMAX){const a=dbuf[best-1],b=dbuf[best],c=dbuf[best+1],den=a-2*b+c; if(Math.abs(den)>1e-9)tau=best+0.5*(a-c)/den;}
   return {f:SR/tau, conf:1-dbuf[best]};
 }
+function bandpass(x){
+  /* 2nd-order high-pass ~70Hz (rumble, breath) then low-pass ~1100Hz (hiss), keeps the hum's fundamental */
+  const y=new Float32Array(x.length);
+  const hp=Math.exp(-2*Math.PI*70/SR), lp=1-Math.exp(-2*Math.PI*1100/SR);
+  let a1=0,b1=0,a2=0,b2=0,l1=0,l2=0;
+  for(let i=0;i<x.length;i++){
+    const v=x[i]; const h1=hp*(b1+v-a1); a1=v; b1=h1; const h2=hp*(b2+h1-a2); a2=h1; b2=h2;
+    l1+=lp*(h2-l1); l2+=lp*(l1-l2); y[i]=l2;
+  }
+  let pk=0; for(let i=0;i<y.length;i++)pk=Math.max(pk,Math.abs(y[i]));
+  if(pk>0){const g=0.9/pk; for(let i=0;i<y.length;i++)y[i]*=g;}
+  return y;
+}
 async function analyze(x,label){
+  x=bandpass(x);
   const frames=[]; let peak=0; const total=Math.max(0,Math.floor((x.length-WIN)/HOP));
   for(let k=0;k<total;k++){
     const s=k*HOP; let e=0; for(let i=0;i<WIN;i++)e+=x[s+i]*x[s+i]; const rms=Math.sqrt(e/WIN);
     if(rms>peak)peak=rms;
-    const r=rms>1e-4?yin(x,s):{f:0,conf:0};
+    const r=rms>1e-5?yin(x,s):{f:0,conf:0};
     frames.push({t:(s+WIN/2)/SR, m:r.f>0?69+12*Math.log2(r.f/440):0, conf:r.conf, rms});
     if(k%300===299){status(label+"を解析中… "+Math.round(k/total*100)+"%");await new Promise(r=>setTimeout(r,0));}
   }
@@ -203,23 +219,41 @@ async function analyze(x,label){
 /* ---------- notes from frames ---------- */
 const med=a=>{const b=a.slice().sort((p,q)=>p-q);return b[b.length>>1];};
 function segment(){
-  const sens=+$("sens").value/100, gate=st.peak*(0.26-sens*0.22), F=st.frames;
-  const v=F.map(f=>f.conf>=0.72&&f.rms>=gate&&f.m>30&&f.m<96?f.m:null);
+  const sens=+$("sens").value/100, F=st.frames;
+  const lv=F.map(f=>f.rms).filter(v=>v>0).sort((p,q)=>p-q);
+  const pct=q=>lv.length?lv[Math.min(lv.length-1,Math.floor(q*lv.length))]:0;
+  const floor=pct(0.1), loud=pct(0.95);
+  /* gate sits between the room noise and the loud part of the hum; higher sensitivity = lower gate */
+  const gate=Math.max(floor*(1+2*(1-sens)), loud*(0.03+0.12*(1-sens)), 1e-5);
+  const confOn=0.82-sens*0.32, confKeep=confOn-0.18;
+  const v=[]; let on=false;
+  F.forEach(f=>{
+    const okRange=f.m>33&&f.m<93;
+    const voiced=okRange&&(on? (f.conf>=confKeep&&f.rms>=gate*0.6) : (f.conf>=confOn&&f.rms>=gate));
+    on=voiced; v.push(voiced?f.m:null);
+  });
+  /* octave-error repair: YIN sometimes jumps exactly one octave on soft hums */
+  let ref=null;
+  for(let i=0;i<v.length;i++){ if(v[i]==null)continue;
+    if(ref!=null){ if(Math.abs(v[i]-12-ref)<1.2)v[i]-=12; else if(Math.abs(v[i]+12-ref)<1.2)v[i]+=12; }
+    ref=ref==null?v[i]:ref*0.7+v[i]*0.3; }
   const sm=v.map((m,i)=>{if(m==null)return null;const w=[];for(let j=i-2;j<=i+2;j++)if(v[j]!=null)w.push(v[j]);return med(w);});
-  const notes=[]; let cur=null, dev=[], gap=0; const hopS=HOP/SR;
-  const close=()=>{ if(cur&&cur.e+hopS-cur.s>=0.07) notes.push({s:cur.s,e:cur.e+hopS,p:med(cur.ps)}); cur=null; dev=[]; };
+  const notes=[]; let cur=null, dev=[], gap=0; const hopS=HOP/SR, maxGap=Math.round(4+sens*5);
+  const close=()=>{ if(cur&&cur.e+hopS-cur.s>=0.06) notes.push({s:cur.s,e:cur.e+hopS,p:med(cur.ps)}); cur=null; dev=[]; };
   sm.forEach((m,i)=>{
     const t=F[i].t;
-    if(m==null){gap++; if(cur&&gap>=4)close(); return;}
+    if(m==null){gap++; if(cur&&gap>=maxGap)close(); return;}
     gap=0;
     if(!cur){cur={s:t,e:t,ps:[m]};return;}
-    const ref=med(cur.ps.slice(-8));
-    if(Math.abs(m-ref)<0.75){cur.ps.push(m);cur.e=t;dev=[];}
+    const r=med(cur.ps.slice(-8));
+    if(Math.abs(m-r)<0.75){cur.ps.push(m);cur.e=t;dev=[];}
     else{dev.push({t,m}); if(dev.length>=4){const d=dev; close(); cur={s:d[0].t,e:t,ps:d.map(z=>z.m)};}}
   });
   close();
   st.raw=notes;
   st.contour=F.map((f,i)=>sm[i]==null?null:{t:f.t,m:sm[i]});
+  const loudFrames=F.filter(f=>f.rms>=gate).length;
+  st.voicedPct=loudFrames?Math.round(v.filter(x=>x!=null).length/loudFrames*100):0;
 }
 
 /* ---------- key detection & quantize ---------- */
@@ -288,7 +322,7 @@ function stats(){
   const N=st.notes, scale=$("scale").value, bars=N.length?Math.ceil(N[N.length-1].e/4):0;
   const kn=NAMES[st.keyUsed]+(scale==="minor"?" マイナー":scale==="major"?" メジャー":"");
   $("stats").innerHTML="";
-  [["音符",N.length+" 個"],["長さ",bars+" 小節"],["キー",(keySel.value==="auto"?"自動: ":"")+kn],["BPM",st.bpm]].forEach(([k,v])=>{const s=document.createElement("span");s.append(k+" ");const b=document.createElement("b");b.textContent=v;s.append(b);$("stats").append(s);});
+  [["音符",N.length+" 個"],["長さ",bars+" 小節"],["キー",(keySel.value==="auto"?"自動: ":"")+kn],["BPM",st.bpm],["声の検出",(st.voicedPct||0)+"%"]].forEach(([k,v])=>{const s=document.createElement("span");s.append(k+" ");const b=document.createElement("b");b.textContent=v;s.append(b);$("stats").append(s);});
   $("saveBtn").disabled=!N.length; $("shareBtn").disabled=!N.length; $("playBtn").disabled=!N.length;
 }
 function refresh(full){ if(full)segment(); quantize(); draw(); stats(); }
@@ -407,7 +441,7 @@ async function startRec(){
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){status("このブラウザではマイクが使えません。SafariでHTTPSのページとして開いてください。","err");return;}
   const c=ctx(); if(c.state==="suspended")await c.resume();
   let stream;
-  try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});}
+  try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:true}});}
   catch(e){status("マイクの使用が許可されませんでした。設定 → Safari → マイク で許可してください。","err");return;}
   const bpm=Math.min(240,Math.max(40,+$("bpm").value||100)), spb=60/bpm, t0=c.currentTime+0.2+4*spb;
   const src=c.createMediaStreamSource(stream), proc=c.createScriptProcessor(4096,1,1), mute=c.createGain(); mute.gain.value=0;
@@ -415,13 +449,14 @@ async function startRec(){
   for(let k=0;k<4;k++)clicks.push(clickAt(c,t0-(4-k)*spb,k===0));
   rec={c,stream,src,proc,mute,chunks,clicks,t0,spb,bpm,sr:c.sampleRate,raf:0,nextClick:t0};
   proc.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0);chunks.push({t:e.playbackTime,d:new Float32Array(d)});
-    let pk=0;for(let i=0;i<d.length;i+=8)pk=Math.max(pk,Math.abs(d[i]));rec&&(rec.level=pk);};
+    let pk=0;for(let i=0;i<d.length;i+=8)pk=Math.max(pk,Math.abs(d[i]));rec&&(rec.level=pk,rec.last=d.slice(0));};
   src.connect(proc);proc.connect(mute);mute.connect(c.destination);
   $("recBtn").textContent="■ 録音ストップ";$("recBtn").classList.add("on");
   status("カウント中… 4拍目のあとに歌い出してください");
   const tick=()=>{ if(!rec)return; const now=c.currentTime, beat=Math.floor((now-(t0-4*spb))/spb);
     dots.forEach((d,i)=>{d.classList.toggle("hit",beat>=0&&((beat%4)===i)&&((now-(t0-4*spb))%spb)<0.15);d.classList.toggle("one",i===0);});
-    $("meter").style.width=Math.min(100,(rec.level||0)*140)+"%";
+    $("meter").style.width=Math.min(100,Math.sqrt(rec.level||0)*120)+"%";
+    livePitch(rec);
     const el=Math.max(0,now-t0); $("recTime").textContent=Math.floor(el/60)+":"+(el%60).toFixed(1).padStart(4,"0");
     if(now>=t0&&!rec.started){rec.started=true;status("録音中… 歌い終わったらストップを押してください");}
     if($("recClick").checked)while(rec.nextClick<now+0.2){if(rec.nextClick>=t0)rec.clicks.push(clickAt(c,rec.nextClick,Math.round((rec.nextClick-t0)/spb)%4===0));rec.nextClick+=spb;}
@@ -429,11 +464,21 @@ async function startRec(){
     rec.raf=requestAnimationFrame(tick); };
   rec.raf=requestAnimationFrame(tick);
 }
+function livePitch(r){
+  const ln=$("liveNote"); if(!r.last){return;}
+  const k=Math.max(1,Math.round(r.sr/SR)), n=Math.floor(r.last.length/k), x=new Float32Array(n);
+  for(let i=0;i<n;i++){let a=0;for(let j=0;j<k;j++)a+=r.last[i*k+j];x[i]=a/k;}
+  if(n<YW+TMAX+1)return;
+  let e=0;for(let i=0;i<YW;i++)e+=x[i]*x[i];
+  const res=Math.sqrt(e/YW)>0.004?yin(x,0):{f:0,conf:0};
+  if(res.conf>0.6&&res.f>60&&res.f<1000){const m=Math.round(69+12*Math.log2(res.f/440));ln.textContent=NAMES[((m%12)+12)%12]+(Math.floor(m/12)-1);ln.classList.add("hit");}
+  else{ln.textContent="—";ln.classList.remove("hit");}
+}
 async function stopRec(){
   const r=rec; rec=null; cancelAnimationFrame(r.raf);
   r.clicks.forEach(o=>{try{o.stop();}catch(_){}});
   r.proc.disconnect();r.src.disconnect();r.mute.disconnect();r.stream.getTracks().forEach(t=>t.stop());
-  $("recBtn").textContent="● 録音スタート";$("recBtn").classList.remove("on");dots.forEach(d=>d.classList.remove("hit"));$("meter").style.width="0";
+  $("recBtn").textContent="● 録音スタート";$("recBtn").classList.remove("on");dots.forEach(d=>d.classList.remove("hit"));$("meter").style.width="0"; $("liveNote").textContent="—"; $("liveNote").classList.remove("hit");
   const parts=[]; let n=0;
   r.chunks.forEach(ch=>{const skip=Math.max(0,Math.round((r.t0-ch.t)*r.sr)); if(skip<ch.d.length){const p=ch.d.subarray(skip);parts.push(p);n+=p.length;}});
   if(n<r.sr*0.5){status("録音が短すぎます。カウントのあと1秒以上歌ってください。","err");return;}
